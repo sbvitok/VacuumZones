@@ -18,7 +18,7 @@ All cleaning commands are **added to the queue**. The vacuum cleaner will start 
 
 Current zone will be in `cleaning` state, next zones will be in `paused` state, other zones will be in `idle` state.
 
-You can pause main vacuum entity, it won't reset the queue. You can stop any of the virtual vacuum cleaners - this will reset the queue, but will not stop cleaning in the current room. You can skip the current room by sending the main vacuum cleaner to the dock, the integration will automatically start the next element of the queue.
+You can pause the main vacuum entity, it won't reset the queue. Stopping a zone cancels that room: every queued pass of it is removed, and other rooms stay queued. If the vacuum is cleaning that room, the pass is interrupted and the next queued room starts, or the vacuum returns to the dock when the queue is empty. Sending the main vacuum to the dock still skips the current room and starts the next queued room.
 
 ## Installation
 

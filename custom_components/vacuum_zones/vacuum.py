@@ -14,30 +14,54 @@ from homeassistant.helpers import entity_registry
 from homeassistant.helpers.script import Script
 
 
+class _Control:
+    """Queue shared by every zone of one vacuum."""
+
+    def __init__(self) -> None:
+        self.queue: list = []
+        # True after the vacuum reports cleaning for the zone we started.
+        self.job_confirmed = False
+
+
 async def async_setup_platform(hass, _, async_add_entities, discovery_info=None):
     entity_id: str = discovery_info["entity_id"]
-    queue: list[ZoneVacuum] = []
+    control = _Control()
     entities = [
-        ZoneVacuum(name, config, entity_id, queue)
+        ZoneVacuum(name, config, entity_id, control)
         for name, config in discovery_info["zones"].items()
     ]
     async_add_entities(entities)
 
     async def state_changed_event_listener(event: Event):
-        if entity_id != event.data.get(ATTR_ENTITY_ID) or not queue:
+        if entity_id != event.data.get(ATTR_ENTITY_ID):
             return
 
         new_state: State = event.data.get("new_state")
+        if new_state is None:
+            return
+
+        if new_state.state == VacuumActivity.CLEANING:
+            control.job_confirmed = True
+
+        if not control.queue:
+            return
+
         if new_state.state not in (VacuumActivity.RETURNING, VacuumActivity.DOCKED):
             return
 
-        prev: ZoneVacuum = queue.pop(0)
-        await prev.internal_stop()
-
-        if not queue:
+        # Returning right after a cancelled room is the interrupted job, not
+        # the room we just started.
+        if not control.job_confirmed:
             return
 
-        next_: ZoneVacuum = queue[0]
+        control.job_confirmed = False
+        prev: ZoneVacuum = control.queue.pop(0)
+        await prev.internal_stop()
+
+        if not control.queue:
+            return
+
+        next_: ZoneVacuum = control.queue[0]
         await next_.internal_start(event.context)
 
     hass.bus.async_listen(EVENT_STATE_CHANGED, state_changed_event_listener)
@@ -51,11 +75,15 @@ class ZoneVacuum(StateVacuumEntity):
     service: str = None
     script: Script = None
 
-    def __init__(self, name: str, config: dict, entity_id: str, queue: list):
+    def __init__(self, name: str, config: dict, entity_id: str, control: "_Control"):
         self._attr_name = config.pop("name", name)
         self._attr_unique_id = config.pop("unique_id", None)
         self.service_data: dict = config | {ATTR_ENTITY_ID: entity_id}
-        self.queue = queue
+        self.control = control
+
+    @property
+    def queue(self) -> list:
+        return self.control.queue
 
     @property
     def vacuum_entity_id(self) -> str:
@@ -95,6 +123,7 @@ class ZoneVacuum(StateVacuumEntity):
     async def internal_start(self, context: Context) -> None:
         self._attr_activity = VacuumActivity.CLEANING
         self.async_write_ha_state()
+        self.control.job_confirmed = False
 
         if self.script:
             await self.script.async_run(context=context)
@@ -103,6 +132,11 @@ class ZoneVacuum(StateVacuumEntity):
             await self.hass.services.async_call(
                 self.domain, self.service, self.service_data, True
             )
+
+        state = self.hass.states.get(self.vacuum_entity_id)
+        self.control.job_confirmed = (
+            state is not None and state.state == VacuumActivity.CLEANING
+        )
 
     async def internal_stop(self):
         self._attr_activity = VacuumActivity.IDLE
@@ -120,9 +154,22 @@ class ZoneVacuum(StateVacuumEntity):
         await self.internal_start(self._context)
 
     async def async_stop(self, **kwargs):
-        for vacuum in self.queue:
-            await vacuum.internal_stop()
-
-        self.queue.clear()
-
+        was_running = self._attr_activity == VacuumActivity.CLEANING
+        self.queue[:] = [zone for zone in self.queue if zone is not self]
+        if was_running:
+            self.control.job_confirmed = False
         await self.internal_stop()
+
+        if not was_running:
+            return
+
+        if self.queue:
+            await self.queue[0].internal_start(self._context)
+            return
+
+        await self.hass.services.async_call(
+            "vacuum",
+            "return_to_base",
+            {ATTR_ENTITY_ID: self.vacuum_entity_id},
+            True,
+        )
