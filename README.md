@@ -16,6 +16,8 @@ By adding these vacuums to your voice assistant, you can give voice commands, li
 
 All cleaning commands are **added to the queue**. The vacuum cleaner will start a new room only after it has finished the previous. Cleaning the next room starts when the vacuum goes into `returning` or `docked` state.
 
+If the vacuum is already cleaning or returning when the first zone command arrives, that command waits until the vacuum docks and then starts.
+
 Current zone will be in `cleaning` state, next zones will be in `paused` state, other zones will be in `idle` state.
 
 You can pause main vacuum entity, it won't reset the queue. You can stop any of the virtual vacuum cleaners - this will reset the queue, but will not stop cleaning in the current room. You can skip the current room by sending the main vacuum cleaner to the dock, the integration will automatically start the next element of the queue.
